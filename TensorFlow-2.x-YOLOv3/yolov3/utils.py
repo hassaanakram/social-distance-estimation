@@ -124,24 +124,14 @@ def image_preprocess(image, target_size, gt_boxes=None):
         return image_paded, gt_boxes
 
 
-def draw_bbox(image, bboxes, CLASSES=YOLO_COCO_CLASSES, show_label=True, show_confidence = True, Text_colors=(255,255,0), rectangle_colors='', tracking=False):   
-    NUM_CLASS = read_class_names(CLASSES)
-    num_classes = len(NUM_CLASS)
+def draw_bbox_lines(image, bboxes, combinations=None, distances=None, centroids=None, show_label=True, show_confidence = True, Text_colors=(0,0,255), bbox_color=(255,255,0), draw_lines = True):   
     image_h, image_w, _ = image.shape
-    hsv_tuples = [(1.0 * x / num_classes, 1., 1.) for x in range(num_classes)]
-    #print("hsv_tuples", hsv_tuples)
-    colors = list(map(lambda x: colorsys.hsv_to_rgb(*x), hsv_tuples))
-    colors = list(map(lambda x: (int(x[0] * 255), int(x[1] * 255), int(x[2] * 255)), colors))
-
-    random.seed(0)
-    random.shuffle(colors)
-    random.seed(None)
 
     for i, bbox in enumerate(bboxes):
         coor = np.array(bbox[:4], dtype=np.int32)
         score = bbox[4]
-        class_ind = int(bbox[5])
-        bbox_color = rectangle_colors if rectangle_colors != '' else colors[class_ind]
+        
+        # BBOX thickness
         bbox_thick = int(0.6 * (image_h + image_w) / 1000)
         if bbox_thick < 1: bbox_thick = 1
         fontScale = 0.75 * bbox_thick
@@ -152,15 +142,7 @@ def draw_bbox(image, bboxes, CLASSES=YOLO_COCO_CLASSES, show_label=True, show_co
 
         if show_label:
             # get text label
-            score_str = " {:.2f}".format(score) if show_confidence else ""
-
-            if tracking: score_str = " "+str(score)
-
-            try:
-                label = "{}".format(NUM_CLASS[class_ind]) + score_str
-            except KeyError:
-                print("You received KeyError, this might be that you are trying to use yolo original weights")
-                print("while using custom classes, if using custom model in configs.py set YOLO_CUSTOM_WEIGHTS = True")
+            label = " {:.2f}".format(score) if show_confidence else ""
 
             # get text size
             (text_width, text_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_COMPLEX_SMALL,
@@ -171,9 +153,32 @@ def draw_bbox(image, bboxes, CLASSES=YOLO_COCO_CLASSES, show_label=True, show_co
             # put text above rectangle
             cv2.putText(image, label, (x1, y1-4), cv2.FONT_HERSHEY_COMPLEX_SMALL,
                         fontScale, Text_colors, bbox_thick, lineType=cv2.LINE_AA)
+    
+    # Draw violation lines
+    if draw_lines:
+        num_violations = 0
+        violate_combinations = []
+        for dist_count, pair in enumerate(combinations):
+            if distances[dist_count]<6:
+                violate_combinations.append(pair)
+                # Violation, draw line
+                cv2.line(image, centroids[pair[0]], centroids[pair[1]], (0,0,255), bbox_thick)
+       
+        num_violations = len(set(list(map(lambda x: x[0], violate_combinations))+list(map(lambda x: x[1], violate_combinations))))      
+        # Print num of violations and store frame
+        label = "Number of violations: {}".format(num_violations)
+        # put filled text rectangle
+        start_x = int(image_w/30)
+        start_y = int(image_h/25)
+        fontScale = int(0.8 * min(image_h, image_w) / 1000)
+        if fontScale < 1: fontScale = 1
+            
+        (text_width, text_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_COMPLEX_SMALL,
+                                                                  fontScale, thickness=bbox_thick)
+        cv2.rectangle(image, (start_x, start_y), (start_x + text_width, start_y - text_height - baseline), (0,0,255), thickness=cv2.FILLED)
+        cv2.putText(image, label, (start_x, start_y), cv2.FONT_HERSHEY_COMPLEX_SMALL, fontScale, (255,255,255), bbox_thick, lineType=cv2.LINE_AA)
 
     return image
-
 
 def bboxes_iou(boxes1, boxes2):
     boxes1 = np.array(boxes1)
@@ -201,8 +206,9 @@ def nms(bboxes, iou_threshold, sigma=0.3, method='nms'):
           https://github.com/bharatsingh430/soft-nms
     """
     classes_in_img = list(set(bboxes[:, 5]))
+    CLASSES = YOLO_COCO_CLASSES
+    NUM_CLASS  = read_class_names(CLASSES)
     best_bboxes = []
-
     for cls in classes_in_img:
         cls_mask = (bboxes[:, 5] == cls)
         cls_bboxes = bboxes[cls_mask]
@@ -211,7 +217,8 @@ def nms(bboxes, iou_threshold, sigma=0.3, method='nms'):
             # Process 2: Select the bounding box with the highest score according to socre order A
             max_ind = np.argmax(cls_bboxes[:, 4])
             best_bbox = cls_bboxes[max_ind]
-            best_bboxes.append(best_bbox)
+            if NUM_CLASS[int(best_bbox[5])] == "person":
+                best_bboxes.append(best_bbox)
             cls_bboxes = np.concatenate([cls_bboxes[: max_ind], cls_bboxes[max_ind + 1:]])
             # Process 3: Calculate this bounding box A and
             # Remain all iou of the bounding box and remove those bounding boxes whose iou value is higher than the threshold 
