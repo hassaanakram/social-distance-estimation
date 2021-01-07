@@ -124,7 +124,134 @@ def image_preprocess(image, target_size, gt_boxes=None):
         return image_paded, gt_boxes
 
 
-def draw_bbox_lines(image, bboxes, combinations=None, distances=None, centroids=None, show_label=True, show_confidence = True, Text_colors=(0,0,255), bbox_color=(255,255,0), draw_lines = True):   
+def draw_detections(image, bboxes, birds_eye=None, combinations=None, distances=None, centroids=None, centroids_transformed=None, dist_threshold = None):
+    image_h, image_w, _ = image.shape
+    
+    # Set thickness of pen
+    bbox_thick = int(0.6 * (image_h + image_w)/1000)
+    if bbox_thick < 1: bbox_thick = 1
+    fontScale = 0.75 * bbox_thick
+    
+    # Combinations wasn't supplied, just draw bboxes
+    if not combinations:
+        for i, bbox in enumerate(bboxes):
+            coor = np.array(bbox[:4], dtype=np.int32)
+            score = bbox[4]
+            
+            (x1, y1), (x2, y2) = (coor[0], coor[1]), (coor[2], coor[3])
+            # put object rectangle
+            cv2.rectangle(image, (x1, y1), (x2, y2), (255,255,0), bbox_thick*2)
+            
+            # get text label
+            label = " {:.2f}".format(score)
+
+            # get text size
+            (text_width, text_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_COMPLEX_SMALL,
+                                                                  fontScale, thickness=bbox_thick)
+            # put filled text rectangle
+            cv2.rectangle(image, (x1, y1), (x1 + text_width, y1 - text_height - baseline), (255,255,0), thickness=cv2.FILLED)
+
+            # put text above rectangle
+            cv2.putText(image, label, (x1, y1-4), cv2.FONT_HERSHEY_COMPLEX_SMALL,
+                        fontScale, (255,255,255), bbox_thick, lineType=cv2.LINE_AA)
+            
+        return image
+    # Need to draw violation lines too
+    red_combinations = []
+    green_combinations = []
+    
+    # Fetch red and green combinations (violating, not violating the distance threshold)
+    for dist_count, pair in enumerate(combinations):
+        if distances[dist_count] <= dist_threshold:
+            red_combinations.append(pair)
+        else:
+            green_combinations.append(pair)
+            
+    # Fetch the unique box IDs in red and green
+    red_unique = list(set(list(map(lambda x: x[0], red_combinations))+list(map(lambda x: x[1], red_combinations))))
+    green_unique = list(set(list(map(lambda x: x[0], green_combinations))+list(map(lambda x: x[1], green_combinations))))
+    
+    green_only = list(np.setdiff1d(green_unique, red_unique))
+    
+    # Drawing green bounding boxes on OG Frame and Green dots in birds eye frame
+    for id in green_only:
+        bbox = bboxes[id]
+        coor = np.array(bbox[:4], dtype=np.int32)
+        score = bbox[4]
+        (x1, y1), (x2, y2) = (coor[0], coor[1]), (coor[2], coor[3])
+        
+        # put object rectangle and label
+        cv2.rectangle(image, (x1, y1), (x2, y2), (255,255,0), bbox_thick*2)
+        label = " {:.2f}".format(score)
+        (text_width, text_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_COMPLEX_SMALL,
+                                                                  fontScale, thickness=bbox_thick)
+        # Put filled rect
+        cv2.rectangle(image, (x1, y1), (x1 + text_width, y1 - text_height - baseline), (255,255,0), thickness=cv2.FILLED)
+        # Text above rect
+        cv2.putText(image, label, (x1, y1-4), cv2.FONT_HERSHEY_COMPLEX_SMALL,
+                        fontScale, (255,255,255), bbox_thick, lineType=cv2.LINE_AA)
+        
+        # Dots in birdseye
+        birds_eye = cv2.circle(birds_eye, centroids_transformed[id], 3, (255,255,0),-1)
+            
+    # Drawing red bounding boxes,lines, red dots and lines in birds eye 
+    drawn_boxes = np.zeros((len(bboxes)), dtype=np.uint8)
+    for id, pair in enumerate(red_combinations):
+        pairs = [pair[0], pair[1]] 
+        
+        # Draw red bounding box
+        for box_id in pairs:
+            if drawn_boxes[box_id] == 0:
+                drawn_boxes[box_id] = 1
+                
+                bbox = bboxes[box_id]
+                coor = np.array(bbox[:4], dtype=np.int32)
+                score = bbox[4]
+                (x1, y1), (x2, y2) = (coor[0], coor[1]), (coor[2], coor[3])
+                # put object rectangle and label
+                cv2.rectangle(image, (x1, y1), (x2, y2), (0,0,255), bbox_thick*2)
+                label = " {:.2f}".format(score)
+                (text_width, text_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_COMPLEX_SMALL,
+                                                                  fontScale, thickness=bbox_thick)
+                # Put filled rect
+                cv2.rectangle(image, (x1, y1), (x1 + text_width, y1 - text_height - baseline), (0,0,255), thickness=cv2.FILLED)
+                # Text above rect
+                cv2.putText(image, label, (x1, y1-4), cv2.FONT_HERSHEY_COMPLEX_SMALL,
+                            fontScale, (255,255,255), bbox_thick, lineType=cv2.LINE_AA)
+                
+                # Dots in birdseye
+                birds_eye = cv2.circle(birds_eye, centroids_transformed[box_id], 3, (0,0,255),-1)
+        
+        # Draw lines OG frame, birds eye view
+        cv2.line(image, centroids[pair[0]], centroids[pair[1]], (0,0,255), bbox_thick)
+        cv2.line(birds_eye, centroids_transformed[pair[0]], centroids_transformed[pair[1]], (0,0,255), 1)
+        
+    # Print number of violations
+    num_violations = len(red_unique)
+    label = "Number of violations: {}".format(num_violations)
+    
+    # put filled text rectangle
+    start_x = int(image_w/30)
+    start_y = int(image_h/25)
+    fontScale = int(0.5 * min(image_h, image_w) / 1000)
+    if fontScale < 1: fontScale = 1
+            
+    (text_width, text_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_COMPLEX_SMALL,
+                                                              fontScale, thickness=bbox_thick)
+    
+    # OG Frame
+    cv2.rectangle(image, (start_x, start_y), (start_x + text_width, start_y - text_height - baseline), (0,0,255), thickness=cv2.FILLED)
+    cv2.putText(image, label, (start_x, start_y), cv2.FONT_HERSHEY_COMPLEX_SMALL, fontScale, (255,255,255), bbox_thick,lineType=cv2.LINE_AA)
+    
+    # Birds eye frame
+    cv2.rectangle(birds_eye, (start_x, start_y), (start_x + text_width, start_y - text_height - baseline), (0,0,255), thickness=cv2.FILLED)
+    cv2.putText(birds_eye,label,(start_x, start_y),cv2.FONT_HERSHEY_COMPLEX_SMALL,fontScale,(255,255,255), bbox_thick,lineType=cv2.LINE_AA)
+    
+    
+    # Return
+    return image, birds_eye
+    
+def draw_bbox(image, bboxes, combinations=None, distances=None, centroids=None, show_label=True, show_confidence = True, Text_colors=(0,0,255), bbox_color=(255,255,0)):   
     image_h, image_w, _ = image.shape
 
     for i, bbox in enumerate(bboxes):
@@ -153,32 +280,50 @@ def draw_bbox_lines(image, bboxes, combinations=None, distances=None, centroids=
             # put text above rectangle
             cv2.putText(image, label, (x1, y1-4), cv2.FONT_HERSHEY_COMPLEX_SMALL,
                         fontScale, Text_colors, bbox_thick, lineType=cv2.LINE_AA)
-    
-    # Draw violation lines
-    if draw_lines:
-        num_violations = 0
-        violate_combinations = []
-        for dist_count, pair in enumerate(combinations):
-            if distances[dist_count]<6:
-                violate_combinations.append(pair)
-                # Violation, draw line
-                cv2.line(image, centroids[pair[0]], centroids[pair[1]], (0,0,255), bbox_thick)
-       
-        num_violations = len(set(list(map(lambda x: x[0], violate_combinations))+list(map(lambda x: x[1], violate_combinations))))      
-        # Print num of violations and store frame
-        label = "Number of violations: {}".format(num_violations)
-        # put filled text rectangle
-        start_x = int(image_w/30)
-        start_y = int(image_h/25)
-        fontScale = int(0.8 * min(image_h, image_w) / 1000)
-        if fontScale < 1: fontScale = 1
-            
-        (text_width, text_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_COMPLEX_SMALL,
-                                                                  fontScale, thickness=bbox_thick)
-        cv2.rectangle(image, (start_x, start_y), (start_x + text_width, start_y - text_height - baseline), (0,0,255), thickness=cv2.FILLED)
-        cv2.putText(image, label, (start_x, start_y), cv2.FONT_HERSHEY_COMPLEX_SMALL, fontScale, (255,255,255), bbox_thick, lineType=cv2.LINE_AA)
 
     return image
+
+def draw_centroids(image, centroids):
+    for centroid in centroids:
+        image = cv2.circle(image, centroid, 2, (0,255,0),-1)
+        
+    return image
+
+def draw_lines(image, distances, combinations, centroids, birds_eye):
+    image_h, image_w, _ = image.shape
+    # Text size set
+    bbox_thick = int(0.6 * (image_h + image_w) / 1000)
+    if bbox_thick < 1: bbox_thick = 1
+        
+    num_violations = 0
+    violate_combinations = []
+    
+    for dist_count, pair in enumerate(combinations):
+        if distances[dist_count]<1.83:
+            violate_combinations.append(pair)
+            # Violation, draw line
+            cv2.line(image, centroids[pair[0]], centroids[pair[1]], (0,0,255), bbox_thick)
+            # Change color of centroid if birds eye view
+            if birds_eye:
+                cv2.circle(image, centroids[pair[0]], 2, (0,0,255), -1)
+                cv2.circle(image, centroids[pair[1]], 2, (0,0,255), -1)
+       
+    num_violations = len(set(list(map(lambda x: x[0], violate_combinations))+list(map(lambda x: x[1], violate_combinations))))      
+    # Print num of violations and store frame
+    label = "Number of violations: {}".format(num_violations)
+    # put filled text rectangle
+    start_x = int(image_w/30)
+    start_y = int(image_h/25)
+    fontScale = int(0.5 * min(image_h, image_w) / 1000)
+    if fontScale < 1: fontScale = 1
+            
+    (text_width, text_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_COMPLEX_SMALL,
+                                                              fontScale, thickness=bbox_thick)
+    cv2.rectangle(image, (start_x, start_y), (start_x + text_width, start_y - text_height - baseline), (0,0,255), thickness=cv2.FILLED)
+    cv2.putText(image, label, (start_x, start_y), cv2.FONT_HERSHEY_COMPLEX_SMALL, fontScale, (255,255,255), bbox_thick, lineType=cv2.LINE_AA)
+    
+    return image
+
 
 def bboxes_iou(boxes1, boxes2):
     boxes1 = np.array(boxes1)
@@ -198,13 +343,16 @@ def bboxes_iou(boxes1, boxes2):
     return ious
 
 
-def nms(bboxes, iou_threshold, sigma=0.3, method='nms'):
+def nms(bboxes, iou_threshold, sigma=0.3, method='nms', limits = None):
     """
     :param bboxes: (xmin, ymin, xmax, ymax, score, class)
 
     Note: soft-nms, https://arxiv.org/pdf/1704.04503.pdf
           https://github.com/bharatsingh430/soft-nms
     """
+    min_limits = limits[0]
+    max_limits = limits[1]
+    
     classes_in_img = list(set(bboxes[:, 5]))
     CLASSES = YOLO_COCO_CLASSES
     NUM_CLASS  = read_class_names(CLASSES)
@@ -218,7 +366,9 @@ def nms(bboxes, iou_threshold, sigma=0.3, method='nms'):
             max_ind = np.argmax(cls_bboxes[:, 4])
             best_bbox = cls_bboxes[max_ind]
             if NUM_CLASS[int(best_bbox[5])] == "person":
-                best_bboxes.append(best_bbox)
+                if best_bbox[0] >= min_limits[0] and best_bbox[1] >= min_limits[1]:
+                    if best_bbox[2] <= max_limits[0] and best_bbox[3] <= max_limits[1]:
+                        best_bboxes.append(best_bbox)
             cls_bboxes = np.concatenate([cls_bboxes[: max_ind], cls_bboxes[max_ind + 1:]])
             # Process 3: Calculate this bounding box A and
             # Remain all iou of the bounding box and remove those bounding boxes whose iou value is higher than the threshold 
